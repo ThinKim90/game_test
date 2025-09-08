@@ -1,0 +1,841 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Falling Objects — Starter (+High Score & Leaderboard Hook)</title>
+  <style>
+    :root {
+      --bg: #0f1226;
+      --panel: #15193a;
+      --text: #e8ecff;
+      --accent: #7aa2ff;
+      --good: #8dffb0;
+      --bad: #ff8d8d;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Apple SD Gothic Neo", "Noto Sans KR", Arial, "Helvetica Neue", Helvetica, sans-serif;
+      display: grid; place-items: center;
+    }
+    .wrap { width: min(720px, 100vw); height: min(1280px, 100vh); aspect-ratio: 9/16; position: relative; }
+    canvas { width: 100%; height: 100%; display: block; background: radial-gradient(120% 100% at 50% 0%, #1b2050 0%, #0f1226 60%); border-radius: 18px; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+
+    /* HUD */
+    .hud { position: absolute; inset: 0; pointer-events: none; padding: 14px; display: flex; justify-content: space-between; align-items: start; }
+    .pill { background: rgba(21,25,58,.6); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,.08); border-radius: 999px; padding: 6px 12px; font-weight: 600; font-size: 14px; pointer-events: auto; }
+    .group { display: flex; gap: 8px; }
+
+    /* Center overlays */
+    .center { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; padding: 16px; }
+    .card { pointer-events: auto; width: 100%; max-width: 520px; background: var(--panel); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 18px; box-shadow: 0 16px 60px rgba(0,0,0,.35); }
+    .card h1 { margin: 0 0 10px; font-size: 22px; }
+    .card p { margin: 6px 0; line-height: 1.45; }
+    .row { display: flex; gap: 8px; margin-top: 12px; }
+    .btn { flex: 1; text-align: center; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(180deg, rgba(122,162,255,.25), rgba(122,162,255,.1)); color: white; font-weight: 700; cursor: pointer; user-select: none; }
+
+    /* Touch controls (mobile) */
+    .touch { position: absolute; inset: 0; display: none; }
+    .touch .zone { position: absolute; top: 0; bottom: 0; width: 50%; }
+    .touch .left { left: 0; }
+    .touch .right { right: 0; }
+    @media (hover: none) and (pointer: coarse) {
+      .touch { display: block; }
+    }
+
+    .badge { font-size: 12px; padding: 4px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,.1); display: inline-block; }
+    .muted { opacity: .9; font-size: 13px; }
+    ul { padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" aria-label="Falling Objects Game"></canvas>
+
+    <!-- HUD -->
+    <div class="hud">
+      <div class="group">
+        <div id="timePill" class="pill">⏱️ 0.0s</div>
+        <div id="scorePill" class="pill">⭐ 0</div>
+        <div id="bestPill" class="pill">🏆 0</div>
+        <div id="levelPill" class="pill">Lv 1</div>
+      </div>
+      <div class="group">
+        <div class="pill badge">← → 이동 / 탭</div>
+      </div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start" class="center">
+      <div class="card">
+        <h1>🌟 낙하물 피하기 — 스타터</h1>
+        <p>좌우로 이동해 <strong style="color:var(--good)">초록 구슬</strong>은 먹고, <strong style="color:var(--bad)">빨간 구슬</strong>은 피하세요.</p>
+        <p class="muted"><small>키보드(← →, A/D) 또는 모바일 탭(왼쪽/오른쪽 화면)을 사용할 수 있어요.</small></p>
+        <div class="row">
+          <button id="startBtn" class="btn">게임 시작</button>
+        </div>
+        <hr style="border-color: rgba(255,255,255,.08); margin: 14px 0;">
+        <p><b>🏆 내 최고 기록:</b> <span id="bestText">0</span>점</p>
+        <p><b>🌐 리더보드 (Top 10)</b></p>
+        <ul id="lb" class="muted"><li>불러오는 중...</li></ul>
+      </div>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="over" class="center" style="display:none">
+      <div class="card">
+        <h1>게임 종료</h1>
+        <p id="summary">결과 요약</p>
+        <p id="nextLevel">다음 레벨 안내</p>
+        <p id="bestNotice" class="muted" style="display:none">🏆 최고 기록 갱신!</p>
+        <div class="row">
+          <button id="restartBtn" class="btn">다시 시작</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Touch Zones (mobile) -->
+    <div class="touch" aria-hidden="true">
+      <div class="zone left" id="zoneLeft"></div>
+      <div class="zone right" id="zoneRight"></div>
+    </div>
+  </div>
+
+  <script>
+    // =============================
+    // Basic Types & State
+    // =============================
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const hudTime = document.getElementById('timePill');
+    const hudScore = document.getElementById('scorePill');
+    const hudBest = document.getElementById('bestPill');
+    const hudLevel = document.getElementById('levelPill');
+
+    const startScreen = document.getElementById('start');
+    const overScreen = document.getElementById('over');
+    const startBtn = document.getElementById('startBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const summary = document.getElementById('summary');
+    const nextLevel = document.getElementById('nextLevel');
+    const bestNotice = document.getElementById('bestNotice');
+
+    const bestText = document.getElementById('bestText');
+    const lb = document.getElementById('lb');
+
+    const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+    const STORAGE_KEYS = { BEST: 'falling_best_v1', NAME: 'falling_name_v1' };
+
+    const GAME = {
+      running: false,
+      width: 360,
+      height: 640,
+      time: 0, // seconds
+      score: 0,
+      level: 1,
+      startAt: 0,
+      lastT: 0,
+      player: { x: 180, y: 600, w: 40, h: 16, speed: 220 },
+      inputs: { left: false, right: false },
+      objects: [], // falling items
+      spawnCooldown: 0,
+      rng: () => Math.random(),
+      best: Number(localStorage.getItem(STORAGE_KEYS.BEST) || 0),
+      name: localStorage.getItem(STORAGE_KEYS.NAME) || '',
+    };
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      GAME.width = Math.floor(rect.width * DPR);
+      GAME.height = Math.floor(rect.height * DPR);
+      canvas.width = GAME.width;
+      canvas.height = GAME.height;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // =============================
+    // Inputs: Keyboard + Touch
+    // =============================
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') GAME.inputs.left = true;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') GAME.inputs.right = true;
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') GAME.inputs.left = false;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') GAME.inputs.right = false;
+    });
+
+    const zoneLeft = document.getElementById('zoneLeft');
+    const zoneRight = document.getElementById('zoneRight');
+    const setTouch = (side, down) => {
+      if (side === 'L') GAME.inputs.left = down;
+      if (side === 'R') GAME.inputs.right = down;
+    };
+    ;['touchstart','pointerdown'].forEach(ev => {
+      zoneLeft.addEventListener(ev, () => setTouch('L', true));
+      zoneRight.addEventListener(ev, () => setTouch('R', true));
+    });
+    ;['touchend','pointerup','pointercancel','touchcancel','pointerleave'].forEach(ev => {
+      zoneLeft.addEventListener(ev, () => setTouch('L', false));
+      zoneRight.addEventListener(ev, () => setTouch('R', false));
+    });
+
+    // =============================
+    // Helpers
+    // =============================
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function randRange(a, b) { return a + (b - a) * GAME.rng(); }
+
+    function spawnObject() {
+      const type = Math.random() < 0.7 ? 'good' : 'bad';
+      const size = randRange(14, 22);
+      const x = randRange(size, GAME.width - size);
+      const speed = randRange(90, 150) * (1 + (GAME.level - 1) * 0.12);
+      GAME.objects.push({ x, y: -size, r: size, speed, type, alive: true });
+    }
+
+    function updateLevel() {
+      // Level based on survival time: +1 every 20s
+      const lvl = 1 + Math.floor(GAME.time / 20);
+      GAME.level = lvl;
+    }
+
+    function nextLevelInfo() {
+      const nextLv = GAME.level + 1;
+      const nextThreshold = (nextLv - 1) * 20; // seconds needed to reach next level
+      const remain = Math.max(0, nextThreshold - GAME.time);
+      return { nextLv, remain };
+    }
+
+    function aabbPlayerHit(obj) {
+      const px = GAME.player.x - GAME.player.w/2;
+      const py = GAME.player.y - GAME.player.h/2;
+      const pr = { x: px, y: py, w: GAME.player.w, h: GAME.player.h };
+      const cx = obj.x, cy = obj.y, r = obj.r;
+      const closestX = clamp(cx, pr.x, pr.x + pr.w);
+      const closestY = clamp(cy, pr.y, pr.y + pr.h);
+      const dx = cx - closestX, dy = cy - closestY;
+      return (dx*dx + dy*dy) <= r*r;
+    }
+
+    // =============================
+    // Game Loop
+    // =============================
+    function startGame() {
+      GAME.running = true;
+      GAME.time = 0; GAME.score = 0; GAME.level = 1;
+      GAME.player.x = GAME.width/2; GAME.player.y = GAME.height - 40;
+      GAME.objects.length = 0; GAME.spawnCooldown = 0;
+      GAME.startAt = performance.now();
+      GAME.lastT = GAME.startAt;
+      bestNotice.style.display = 'none';
+      startScreen.style.display = 'none';
+      overScreen.style.display = 'none';
+      requestAnimationFrame(tick);
+    }
+
+    async function endGame(reason = 'hit') {
+      GAME.running = false;
+      const { nextLv, remain } = nextLevelInfo();
+      const timeStr = GAME.time.toFixed(1);
+      summary.innerHTML = `⏱️ <b>${timeStr}s</b> 동안 버텼고, ⭐ <b>${GAME.score}</b>점을 획득했습니다.<br>현재 레벨은 <b>Lv ${GAME.level}</b>입니다.`;
+      nextLevel.innerHTML = `다음 레벨 <b>Lv ${nextLv}</b>까지 남은 시간: <b>${remain.toFixed(1)}초</b>`;
+
+      // Best score (local)
+      if (GAME.score > GAME.best) {
+        GAME.best = GAME.score;
+        localStorage.setItem(STORAGE_KEYS.BEST, String(GAME.best));
+        bestNotice.style.display = 'block';
+      }
+      hudBest.textContent = `🏆 ${GAME.best}`;
+      bestText.textContent = GAME.best;
+
+      // Submit to serverless leaderboard (optional)
+      try {
+        await maybeAskPlayerName();
+        await submitScore({ name: GAME.name || '익명', score: GAME.score, time: GAME.time });
+        await fetchLeaderboard();
+      } catch (e) { /* ignore network errors silently */ }
+
+      overScreen.style.display = 'grid';
+    }
+
+    function tick(ts) {
+      if (!GAME.running) return;
+      const dt = Math.min(0.033, (ts - GAME.lastT) / 1000);
+      GAME.lastT = ts;
+      GAME.time = (ts - GAME.startAt) / 1000;
+
+      updateLevel();
+
+      // Player movement
+      const dir = (GAME.inputs.right ? 1 : 0) - (GAME.inputs.left ? 1 : 0);
+      GAME.player.x += dir * GAME.player.speed * dt * DPR;
+      GAME.player.x = clamp(GAME.player.x, GAME.player.w/2, GAME.width - GAME.player.w/2);
+
+      // Spawn logic — faster with higher level
+      GAME.spawnCooldown -= dt;
+      const spawnRate = Math.max(0.15, 0.55 - (GAME.level - 1) * 0.05);
+      if (GAME.spawnCooldown <= 0) {
+        spawnObject();
+        GAME.spawnCooldown = spawnRate;
+      }
+
+      // Update objects
+      for (const obj of GAME.objects) {
+        if (!obj.alive) continue;
+        obj.y += obj.speed * dt * DPR;
+        if (aabbPlayerHit(obj)) {
+          if (obj.type === 'good') { obj.alive = false; GAME.score += 1; }
+          else { endGame('hit'); return; }
+        }
+        if (obj.y - obj.r > GAME.height) obj.alive = false;
+      }
+      if (GAME.objects.length > 200) GAME.objects = GAME.objects.filter(o => o.alive);
+
+      // Render
+      draw();
+
+      // HUD
+      hudTime.textContent = `⏱️ ${GAME.time.toFixed(1)}s`;
+      hudScore.textContent = `⭐ ${GAME.score}`;
+      hudLevel.textContent = `Lv ${GAME.level}`;
+      hudBest.textContent = `🏆 ${GAME.best}`;
+
+      requestAnimationFrame(tick);
+    }
+
+    // =============================
+    // Rendering
+    // =============================
+    function draw() {
+      const { width:w, height:h } = GAME;
+      ctx.clearRect(0,0,w,h);
+
+      // Stars background
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      for (let i = 0; i < 40; i++) {
+        const sx = (i * 97) % w; const sy = (i * 71) % h;
+        ctx.fillStyle = '#2a2f66';
+        ctx.beginPath(); ctx.arc(sx, sy, 1.2, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+
+      // Player (capsule)
+      const p = GAME.player;
+      drawCapsule(p.x - p.w/2, p.y - p.h/2, p.w, p.h, '#a6b4ff', '#2f3b8f');
+
+      // Objects
+      for (const o of GAME.objects) {
+        if (!o.alive) continue;
+        ctx.beginPath();
+        ctx.arc(o.x, o.y, o.r, 0, Math.PI*2);
+        ctx.fillStyle = (o.type === 'good') ? '#8dffb0' : '#ff8d8d';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(o.x - o.r*0.3, o.y - o.r*0.3, o.r*0.35, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,.35)';
+        ctx.fill();
+      }
+    }
+
+    function drawCapsule(x, y, w, h, fill, stroke) {
+      const r = Math.min(h/2, w/2);
+      ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 2 * DPR;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arc(x + w - r, y + r, r, -Math.PI/2, Math.PI/2);
+      ctx.lineTo(x + r, y + h);
+      ctx.arc(x + r, y + r, r, Math.PI/2, -Math.PI/2);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+    }
+
+    // =============================
+    // Leaderboard (serverless hook)
+    // =============================
+    async function fetchLeaderboard() {
+      try {
+        const res = await fetch('/.netlify/functions/leaderboard');
+        if (!res.ok) throw new Error('bad');
+        const items = await res.json();
+        lb.innerHTML = '';
+        items.forEach((it, i) => {
+          const li = document.createElement('li');
+          li.textContent = `${i+1}. ${it.name} — ${it.score}점 (${it.time.toFixed(1)}s)`;
+          lb.appendChild(li);
+        });
+        if (items.length === 0) lb.innerHTML = '<li>아직 기록이 없어요. 첫 주인공이 되어봐요!</li>'
+      } catch (e) {
+        lb.innerHTML = '<li>리더보드를 불러올 수 없어요 (배포 후 자동 활성화)</li>'
+      }
+    }
+
+    async function submitScore(data) {
+      const res = await fetch('/.netlify/functions/leaderboard', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+      });
+      return res.ok;
+    }
+
+    async function maybeAskPlayerName() {
+      if (GAME.name && GAME.name.trim().length >= 2) return;
+      const name = prompt('리더보드에 표시할 이름(2~12자):', GAME.name || '');
+      if (name && name.trim().length >= 2) {
+        GAME.name = name.trim().slice(0,12);
+        localStorage.setItem(STORAGE_KEYS.NAME, GAME.name);
+      }
+    }
+
+    // =============================
+    // Bindings
+    // =============================
+    startBtn.addEventListener('click', startGame);
+    restartBtn.addEventListener('click', startGame);
+    window.addEventListener('keydown', (e) => {
+      if ((e.code === 'Space' || e.code === 'Enter') && !GAME.running && startScreen.style.display !== 'none') startGame();
+    });
+
+    // init best + leaderboard
+    bestText.textContent = GAME.best;
+    hudBest.textContent = `🏆 ${GAME.best}`;
+    fetchLeaderboard();
+
+    // =============================
+    // TODO (학습용)
+    // 1) 목숨(하트) 시스템
+    // 2) 콤보 보너스
+    // 3) 버프 아이템
+    // 4) 효과음/패럴럭스
+    // 5) LocalStorage 최고 기록 배지 강화
+    // 6) 접근성 옵션
+    // =============================
+  </script>
+</body>
+</html><!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Falling Objects — Starter (+High Score & Leaderboard Hook)</title>
+  <style>
+    :root {
+      --bg: #0f1226;
+      --panel: #15193a;
+      --text: #e8ecff;
+      --accent: #7aa2ff;
+      --good: #8dffb0;
+      --bad: #ff8d8d;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Apple SD Gothic Neo", "Noto Sans KR", Arial, "Helvetica Neue", Helvetica, sans-serif;
+      display: grid; place-items: center;
+    }
+    .wrap { width: min(720px, 100vw); height: min(1280px, 100vh); aspect-ratio: 9/16; position: relative; }
+    canvas { width: 100%; height: 100%; display: block; background: radial-gradient(120% 100% at 50% 0%, #1b2050 0%, #0f1226 60%); border-radius: 18px; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
+
+    /* HUD */
+    .hud { position: absolute; inset: 0; pointer-events: none; padding: 14px; display: flex; justify-content: space-between; align-items: start; }
+    .pill { background: rgba(21,25,58,.6); backdrop-filter: blur(6px); border: 1px solid rgba(255,255,255,.08); border-radius: 999px; padding: 6px 12px; font-weight: 600; font-size: 14px; pointer-events: auto; }
+    .group { display: flex; gap: 8px; }
+
+    /* Center overlays */
+    .center { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; padding: 16px; }
+    .card { pointer-events: auto; width: 100%; max-width: 520px; background: var(--panel); border: 1px solid rgba(255,255,255,.08); border-radius: 16px; padding: 18px; box-shadow: 0 16px 60px rgba(0,0,0,.35); }
+    .card h1 { margin: 0 0 10px; font-size: 22px; }
+    .card p { margin: 6px 0; line-height: 1.45; }
+    .row { display: flex; gap: 8px; margin-top: 12px; }
+    .btn { flex: 1; text-align: center; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(180deg, rgba(122,162,255,.25), rgba(122,162,255,.1)); color: white; font-weight: 700; cursor: pointer; user-select: none; }
+
+    /* Touch controls (mobile) */
+    .touch { position: absolute; inset: 0; display: none; }
+    .touch .zone { position: absolute; top: 0; bottom: 0; width: 50%; }
+    .touch .left { left: 0; }
+    .touch .right { right: 0; }
+    @media (hover: none) and (pointer: coarse) {
+      .touch { display: block; }
+    }
+
+    .badge { font-size: 12px; padding: 4px 8px; border-radius: 999px; border: 1px solid rgba(255,255,255,.1); display: inline-block; }
+    .muted { opacity: .9; font-size: 13px; }
+    ul { padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <canvas id="game" aria-label="Falling Objects Game"></canvas>
+
+    <!-- HUD -->
+    <div class="hud">
+      <div class="group">
+        <div id="timePill" class="pill">⏱️ 0.0s</div>
+        <div id="scorePill" class="pill">⭐ 0</div>
+        <div id="bestPill" class="pill">🏆 0</div>
+        <div id="levelPill" class="pill">Lv 1</div>
+      </div>
+      <div class="group">
+        <div class="pill badge">← → 이동 / 탭</div>
+      </div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start" class="center">
+      <div class="card">
+        <h1>🌟 낙하물 피하기 — 스타터</h1>
+        <p>좌우로 이동해 <strong style="color:var(--good)">초록 구슬</strong>은 먹고, <strong style="color:var(--bad)">빨간 구슬</strong>은 피하세요.</p>
+        <p class="muted"><small>키보드(← →, A/D) 또는 모바일 탭(왼쪽/오른쪽 화면)을 사용할 수 있어요.</small></p>
+        <div class="row">
+          <button id="startBtn" class="btn">게임 시작</button>
+        </div>
+        <hr style="border-color: rgba(255,255,255,.08); margin: 14px 0;">
+        <p><b>🏆 내 최고 기록:</b> <span id="bestText">0</span>점</p>
+        <p><b>🌐 리더보드 (Top 10)</b></p>
+        <ul id="lb" class="muted"><li>불러오는 중...</li></ul>
+      </div>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="over" class="center" style="display:none">
+      <div class="card">
+        <h1>게임 종료</h1>
+        <p id="summary">결과 요약</p>
+        <p id="nextLevel">다음 레벨 안내</p>
+        <p id="bestNotice" class="muted" style="display:none">🏆 최고 기록 갱신!</p>
+        <div class="row">
+          <button id="restartBtn" class="btn">다시 시작</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Touch Zones (mobile) -->
+    <div class="touch" aria-hidden="true">
+      <div class="zone left" id="zoneLeft"></div>
+      <div class="zone right" id="zoneRight"></div>
+    </div>
+  </div>
+
+  <script>
+    // =============================
+    // Basic Types & State
+    // =============================
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    const hudTime = document.getElementById('timePill');
+    const hudScore = document.getElementById('scorePill');
+    const hudBest = document.getElementById('bestPill');
+    const hudLevel = document.getElementById('levelPill');
+
+    const startScreen = document.getElementById('start');
+    const overScreen = document.getElementById('over');
+    const startBtn = document.getElementById('startBtn');
+    const restartBtn = document.getElementById('restartBtn');
+    const summary = document.getElementById('summary');
+    const nextLevel = document.getElementById('nextLevel');
+    const bestNotice = document.getElementById('bestNotice');
+
+    const bestText = document.getElementById('bestText');
+    const lb = document.getElementById('lb');
+
+    const DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+
+    const STORAGE_KEYS = { BEST: 'falling_best_v1', NAME: 'falling_name_v1' };
+
+    const GAME = {
+      running: false,
+      width: 360,
+      height: 640,
+      time: 0, // seconds
+      score: 0,
+      level: 1,
+      startAt: 0,
+      lastT: 0,
+      player: { x: 180, y: 600, w: 40, h: 16, speed: 220 },
+      inputs: { left: false, right: false },
+      objects: [], // falling items
+      spawnCooldown: 0,
+      rng: () => Math.random(),
+      best: Number(localStorage.getItem(STORAGE_KEYS.BEST) || 0),
+      name: localStorage.getItem(STORAGE_KEYS.NAME) || '',
+    };
+
+    function resize() {
+      const rect = canvas.getBoundingClientRect();
+      GAME.width = Math.floor(rect.width * DPR);
+      GAME.height = Math.floor(rect.height * DPR);
+      canvas.width = GAME.width;
+      canvas.height = GAME.height;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    // =============================
+    // Inputs: Keyboard + Touch
+    // =============================
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') GAME.inputs.left = true;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') GAME.inputs.right = true;
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.code === 'ArrowLeft' || e.code === 'KeyA') GAME.inputs.left = false;
+      if (e.code === 'ArrowRight' || e.code === 'KeyD') GAME.inputs.right = false;
+    });
+
+    const zoneLeft = document.getElementById('zoneLeft');
+    const zoneRight = document.getElementById('zoneRight');
+    const setTouch = (side, down) => {
+      if (side === 'L') GAME.inputs.left = down;
+      if (side === 'R') GAME.inputs.right = down;
+    };
+    ;['touchstart','pointerdown'].forEach(ev => {
+      zoneLeft.addEventListener(ev, () => setTouch('L', true));
+      zoneRight.addEventListener(ev, () => setTouch('R', true));
+    });
+    ;['touchend','pointerup','pointercancel','touchcancel','pointerleave'].forEach(ev => {
+      zoneLeft.addEventListener(ev, () => setTouch('L', false));
+      zoneRight.addEventListener(ev, () => setTouch('R', false));
+    });
+
+    // =============================
+    // Helpers
+    // =============================
+    function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+    function randRange(a, b) { return a + (b - a) * GAME.rng(); }
+
+    function spawnObject() {
+      const type = Math.random() < 0.7 ? 'good' : 'bad';
+      const size = randRange(14, 22);
+      const x = randRange(size, GAME.width - size);
+      const speed = randRange(90, 150) * (1 + (GAME.level - 1) * 0.12);
+      GAME.objects.push({ x, y: -size, r: size, speed, type, alive: true });
+    }
+
+    function updateLevel() {
+      // Level based on survival time: +1 every 20s
+      const lvl = 1 + Math.floor(GAME.time / 20);
+      GAME.level = lvl;
+    }
+
+    function nextLevelInfo() {
+      const nextLv = GAME.level + 1;
+      const nextThreshold = (nextLv - 1) * 20; // seconds needed to reach next level
+      const remain = Math.max(0, nextThreshold - GAME.time);
+      return { nextLv, remain };
+    }
+
+    function aabbPlayerHit(obj) {
+      const px = GAME.player.x - GAME.player.w/2;
+      const py = GAME.player.y - GAME.player.h/2;
+      const pr = { x: px, y: py, w: GAME.player.w, h: GAME.player.h };
+      const cx = obj.x, cy = obj.y, r = obj.r;
+      const closestX = clamp(cx, pr.x, pr.x + pr.w);
+      const closestY = clamp(cy, pr.y, pr.y + pr.h);
+      const dx = cx - closestX, dy = cy - closestY;
+      return (dx*dx + dy*dy) <= r*r;
+    }
+
+    // =============================
+    // Game Loop
+    // =============================
+    function startGame() {
+      GAME.running = true;
+      GAME.time = 0; GAME.score = 0; GAME.level = 1;
+      GAME.player.x = GAME.width/2; GAME.player.y = GAME.height - 40;
+      GAME.objects.length = 0; GAME.spawnCooldown = 0;
+      GAME.startAt = performance.now();
+      GAME.lastT = GAME.startAt;
+      bestNotice.style.display = 'none';
+      startScreen.style.display = 'none';
+      overScreen.style.display = 'none';
+      requestAnimationFrame(tick);
+    }
+
+    async function endGame(reason = 'hit') {
+      GAME.running = false;
+      const { nextLv, remain } = nextLevelInfo();
+      const timeStr = GAME.time.toFixed(1);
+      summary.innerHTML = `⏱️ <b>${timeStr}s</b> 동안 버텼고, ⭐ <b>${GAME.score}</b>점을 획득했습니다.<br>현재 레벨은 <b>Lv ${GAME.level}</b>입니다.`;
+      nextLevel.innerHTML = `다음 레벨 <b>Lv ${nextLv}</b>까지 남은 시간: <b>${remain.toFixed(1)}초</b>`;
+
+      // Best score (local)
+      if (GAME.score > GAME.best) {
+        GAME.best = GAME.score;
+        localStorage.setItem(STORAGE_KEYS.BEST, String(GAME.best));
+        bestNotice.style.display = 'block';
+      }
+      hudBest.textContent = `🏆 ${GAME.best}`;
+      bestText.textContent = GAME.best;
+
+      // Submit to serverless leaderboard (optional)
+      try {
+        await maybeAskPlayerName();
+        await submitScore({ name: GAME.name || '익명', score: GAME.score, time: GAME.time });
+        await fetchLeaderboard();
+      } catch (e) { /* ignore network errors silently */ }
+
+      overScreen.style.display = 'grid';
+    }
+
+    function tick(ts) {
+      if (!GAME.running) return;
+      const dt = Math.min(0.033, (ts - GAME.lastT) / 1000);
+      GAME.lastT = ts;
+      GAME.time = (ts - GAME.startAt) / 1000;
+
+      updateLevel();
+
+      // Player movement
+      const dir = (GAME.inputs.right ? 1 : 0) - (GAME.inputs.left ? 1 : 0);
+      GAME.player.x += dir * GAME.player.speed * dt * DPR;
+      GAME.player.x = clamp(GAME.player.x, GAME.player.w/2, GAME.width - GAME.player.w/2);
+
+      // Spawn logic — faster with higher level
+      GAME.spawnCooldown -= dt;
+      const spawnRate = Math.max(0.15, 0.55 - (GAME.level - 1) * 0.05);
+      if (GAME.spawnCooldown <= 0) {
+        spawnObject();
+        GAME.spawnCooldown = spawnRate;
+      }
+
+      // Update objects
+      for (const obj of GAME.objects) {
+        if (!obj.alive) continue;
+        obj.y += obj.speed * dt * DPR;
+        if (aabbPlayerHit(obj)) {
+          if (obj.type === 'good') { obj.alive = false; GAME.score += 1; }
+          else { endGame('hit'); return; }
+        }
+        if (obj.y - obj.r > GAME.height) obj.alive = false;
+      }
+      if (GAME.objects.length > 200) GAME.objects = GAME.objects.filter(o => o.alive);
+
+      // Render
+      draw();
+
+      // HUD
+      hudTime.textContent = `⏱️ ${GAME.time.toFixed(1)}s`;
+      hudScore.textContent = `⭐ ${GAME.score}`;
+      hudLevel.textContent = `Lv ${GAME.level}`;
+      hudBest.textContent = `🏆 ${GAME.best}`;
+
+      requestAnimationFrame(tick);
+    }
+
+    // =============================
+    // Rendering
+    // =============================
+    function draw() {
+      const { width:w, height:h } = GAME;
+      ctx.clearRect(0,0,w,h);
+
+      // Stars background
+      ctx.save();
+      ctx.globalAlpha = 0.5;
+      for (let i = 0; i < 40; i++) {
+        const sx = (i * 97) % w; const sy = (i * 71) % h;
+        ctx.fillStyle = '#2a2f66';
+        ctx.beginPath(); ctx.arc(sx, sy, 1.2, 0, Math.PI*2); ctx.fill();
+      }
+      ctx.restore();
+
+      // Player (capsule)
+      const p = GAME.player;
+      drawCapsule(p.x - p.w/2, p.y - p.h/2, p.w, p.h, '#a6b4ff', '#2f3b8f');
+
+      // Objects
+      for (const o of GAME.objects) {
+        if (!o.alive) continue;
+        ctx.beginPath();
+        ctx.arc(o.x, o.y, o.r, 0, Math.PI*2);
+        ctx.fillStyle = (o.type === 'good') ? '#8dffb0' : '#ff8d8d';
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(o.x - o.r*0.3, o.y - o.r*0.3, o.r*0.35, 0, Math.PI*2);
+        ctx.fillStyle = 'rgba(255,255,255,.35)';
+        ctx.fill();
+      }
+    }
+
+    function drawCapsule(x, y, w, h, fill, stroke) {
+      const r = Math.min(h/2, w/2);
+      ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 2 * DPR;
+      ctx.beginPath();
+      ctx.moveTo(x + r, y);
+      ctx.lineTo(x + w - r, y);
+      ctx.arc(x + w - r, y + r, r, -Math.PI/2, Math.PI/2);
+      ctx.lineTo(x + r, y + h);
+      ctx.arc(x + r, y + r, r, Math.PI/2, -Math.PI/2);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+    }
+
+    // =============================
+    // Leaderboard (serverless hook)
+    // =============================
+    async function fetchLeaderboard() {
+      try {
+        const res = await fetch('/.netlify/functions/leaderboard');
+        if (!res.ok) throw new Error('bad');
+        const items = await res.json();
+        lb.innerHTML = '';
+        items.forEach((it, i) => {
+          const li = document.createElement('li');
+          li.textContent = `${i+1}. ${it.name} — ${it.score}점 (${it.time.toFixed(1)}s)`;
+          lb.appendChild(li);
+        });
+        if (items.length === 0) lb.innerHTML = '<li>아직 기록이 없어요. 첫 주인공이 되어봐요!</li>'
+      } catch (e) {
+        lb.innerHTML = '<li>리더보드를 불러올 수 없어요 (배포 후 자동 활성화)</li>'
+      }
+    }
+
+    async function submitScore(data) {
+      const res = await fetch('/.netlify/functions/leaderboard', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data)
+      });
+      return res.ok;
+    }
+
+    async function maybeAskPlayerName() {
+      if (GAME.name && GAME.name.trim().length >= 2) return;
+      const name = prompt('리더보드에 표시할 이름(2~12자):', GAME.name || '');
+      if (name && name.trim().length >= 2) {
+        GAME.name = name.trim().slice(0,12);
+        localStorage.setItem(STORAGE_KEYS.NAME, GAME.name);
+      }
+    }
+
+    // =============================
+    // Bindings
+    // =============================
+    startBtn.addEventListener('click', startGame);
+    restartBtn.addEventListener('click', startGame);
+    window.addEventListener('keydown', (e) => {
+      if ((e.code === 'Space' || e.code === 'Enter') && !GAME.running && startScreen.style.display !== 'none') startGame();
+    });
+
+    // init best + leaderboard
+    bestText.textContent = GAME.best;
+    hudBest.textContent = `🏆 ${GAME.best}`;
+    fetchLeaderboard();
+
+    // =============================
+    // TODO (학습용)
+    // 1) 목숨(하트) 시스템
+    // 2) 콤보 보너스
+    // 3) 버프 아이템
+    // 4) 효과음/패럴럭스
+    // 5) LocalStorage 최고 기록 배지 강화
+    // 6) 접근성 옵션
+    // =============================
+  </script>
+</body>
+</html>
