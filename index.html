@@ -38,7 +38,7 @@
     .btn { flex: 1; text-align: center; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(180deg, rgba(122,162,255,.25), rgba(122,162,255,.1)); color: white; font-weight: 700; cursor: pointer; user-select: none; }
 
     /* Touch controls (mobile) */
-    .touch { position: absolute; inset: 0; display: none; }
+    .touch { position: absolute; inset: 0; display: none; pointer-events: none; }
     .touch .zone { position: absolute; top: 0; bottom: 0; width: 50%; }
     .touch .left { left: 0; }
     .touch .right { right: 0; }
@@ -163,9 +163,11 @@
     // Inputs: Keyboard + Touch
     // =============================
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'ArrowLeft' || e.code === 'KeyA') GAME.inputs.left = true;
-      if (e.code === 'ArrowRight' || e.code === 'KeyD') GAME.inputs.right = true;
+      if ((e.code === 'Space' || e.code === 'Enter') && !GAME.running && startScreen.style.display !== 'none') startGame();
     });
+    // Touch on buttons (ensure tap triggers start)
+    startBtn.addEventListener('touchend', (e) => { e.preventDefault(); if (!GAME.running) startGame(); }, { passive: false });
+    restartBtn.addEventListener('touchend', (e) => { e.preventDefault(); startGame(); }, { passive: false });
     window.addEventListener('keyup', (e) => {
       if (e.code === 'ArrowLeft' || e.code === 'KeyA') GAME.inputs.left = false;
       if (e.code === 'ArrowRight' || e.code === 'KeyD') GAME.inputs.right = false;
@@ -173,26 +175,28 @@
 
     const zoneLeft = document.getElementById('zoneLeft');
     const zoneRight = document.getElementById('zoneRight');
+    const touchLayer = document.querySelector('.touch');
     const setTouch = (side, down) => {
       if (!down) { GAME.inputs.left = false; GAME.inputs.right = false; return; }
       if (side === 'L') { GAME.inputs.left = true; GAME.inputs.right = false; }
       if (side === 'R') { GAME.inputs.right = true; GAME.inputs.left = false; }
     };
 
-    // Explicit zones (if media query hides them on some devices, we also attach global handlers below)
+    // Explicit zones (left/right). We'll enable pointer-events only during gameplay.
     ['touchstart','pointerdown','mousedown'].forEach(ev => {
-      zoneLeft.addEventListener(ev, () => setTouch('L', true));
-      zoneRight.addEventListener(ev, () => setTouch('R', true));
+      zoneLeft.addEventListener(ev, (e) => { if (!GAME.running) return; setTouch('L', true); });
+      zoneRight.addEventListener(ev, (e) => { if (!GAME.running) return; setTouch('R', true); });
     });
     ['touchend','pointerup','pointercancel','touchcancel','pointerleave','mouseup','mouseleave'].forEach(ev => {
       zoneLeft.addEventListener(ev, () => setTouch('L', false));
       zoneRight.addEventListener(ev, () => setTouch('R', false));
     });
 
-    // Global mobile handlers (works even if .touch zones are not shown due to device quirks)
+    // Canvas-level mobile handlers (no global preventDefault to avoid blocking buttons)
     function handleTouchPos(e, down) {
+      if (!GAME.running) return;
       const rect = canvas.getBoundingClientRect();
-      const point = (e.touches && e.touches[0]) || e.changedTouches && e.changedTouches[0] || e;
+      const point = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
       if (!point) return;
       const x = point.clientX;
       const mid = rect.left + rect.width/2;
@@ -202,9 +206,9 @@
         setTouch('L', false);
       }
     }
-    window.addEventListener('touchstart', (e) => { handleTouchPos(e, true); e.preventDefault(); }, { passive: false });
-    window.addEventListener('touchmove', (e) => { handleTouchPos(e, true); e.preventDefault(); }, { passive: false });
-    window.addEventListener('touchend', (e) => { handleTouchPos(e, false); e.preventDefault(); }, { passive: false });
+    canvas.addEventListener('touchstart', (e) => { handleTouchPos(e, true); }, { passive: true });
+    canvas.addEventListener('touchmove',  (e) => { handleTouchPos(e, true); }, { passive: true });
+    canvas.addEventListener('touchend',   (e) => { handleTouchPos(e, false); }, { passive: true });
 
     // =============================
     // Helpers
@@ -254,9 +258,11 @@
       GAME.objects.length = 0; GAME.spawnCooldown = 0;
       GAME.startAt = performance.now();
       GAME.lastT = GAME.startAt;
-      bestNotice.style.display = 'none';
+      bestNotice && (bestNotice.style.display = 'none');
       startScreen.style.display = 'none';
       overScreen.style.display = 'none';
+      // enable touch layer during gameplay
+      if (touchLayer) touchLayer.style.pointerEvents = 'auto';
       requestAnimationFrame(tick);
     }
 
@@ -267,22 +273,22 @@
       summary.innerHTML = `⏱️ <b>${timeStr}s</b> 동안 버텼고, ⭐ <b>${GAME.score}</b>점을 획득했습니다.<br>현재 레벨은 <b>Lv ${GAME.level}</b>입니다.`;
       nextLevel.innerHTML = `다음 레벨 <b>Lv ${nextLv}</b>까지 남은 시간: <b>${remain.toFixed(1)}초</b>`;
 
-      // Best score (local)
       if (GAME.score > GAME.best) {
         GAME.best = GAME.score;
         localStorage.setItem(STORAGE_KEYS.BEST, String(GAME.best));
-        bestNotice.style.display = 'block';
+        bestNotice && (bestNotice.style.display = 'block');
       }
       hudBest.textContent = `🏆 ${GAME.best}`;
       bestText.textContent = GAME.best;
 
-      // Submit to serverless leaderboard (optional)
       try {
         await maybeAskPlayerName();
         await submitScore({ name: GAME.name || '익명', score: GAME.score, time: GAME.time });
         await fetchLeaderboard();
-      } catch (e) { /* ignore network errors silently */ }
+      } catch (e) { /* ignore network errors */ }
 
+      // disable touch layer when game over to let buttons receive touches
+      if (touchLayer) touchLayer.style.pointerEvents = 'none';
       overScreen.style.display = 'grid';
     }
 
@@ -479,7 +485,7 @@
     .btn { flex: 1; text-align: center; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(255,255,255,.1); background: linear-gradient(180deg, rgba(122,162,255,.25), rgba(122,162,255,.1)); color: white; font-weight: 700; cursor: pointer; user-select: none; }
 
     /* Touch controls (mobile) */
-    .touch { position: absolute; inset: 0; display: none; }
+    .touch { position: absolute; inset: 0; display: none; pointer-events: none; }
     .touch .zone { position: absolute; top: 0; bottom: 0; width: 50%; }
     .touch .left { left: 0; }
     .touch .right { right: 0; }
